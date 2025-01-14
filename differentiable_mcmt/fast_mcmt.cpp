@@ -136,38 +136,75 @@ namespace GEO
         // exit(0);
     }
 
-    void MCMT::add_mid_points(int num_points, double *point_positions, double *point_values)
+    void MCMT::add_mid_points(int num_points, double* point_positions, double* point_values)
     {
+        auto start = std::chrono::high_resolution_clock::now();
         num_point_visited_ = point_positions_.size() / 3;
-        for (index_t i = 0; i < num_points; i++)
+        size_t old_positions_size = point_positions_.size();
+        size_t old_values_size = point_values_.size();
+
+        // Preallocate memory
+        point_positions_.resize(old_positions_size + num_points * 3);
+        point_values_.resize(old_values_size + num_points);
+        point_errors_.resize(old_values_size + num_points);
+
+        double max_b = max_bound;
+        double min_b = min_bound;
+
+        for (index_t i = 0; i < num_points; ++i)
         {
-            point_positions_.push_back(point_positions[i * 3]);
-            point_positions_.push_back(point_positions[i * 3 + 1]);
-            point_positions_.push_back(point_positions[i * 3 + 2]);
-            point_values_.push_back(point_values[i]);
-            point_errors_.push_back(1 / (abs(point_values[i]) + 1e-6));
+            double x = point_positions[i * 3];
+            double y = point_positions[i * 3 + 1];
+            double z = point_positions[i * 3 + 2];
+
+            // Direct indexing
+            size_t idx = old_positions_size + i * 3;
+            point_positions_[idx] = x;
+            point_positions_[idx + 1] = y;
+            point_positions_[idx + 2] = z;
+
+            point_values_[old_values_size + i] = point_values[i];
+            point_errors_[old_values_size + i] = 1 / (std::abs(point_values[i]) + 1e-6);
+
+            // Optimize bound updates
+            if (x > max_b) max_b = x;
+            if (y > max_b) max_b = y;
+            if (z > max_b) max_b = z;
+
+            if (x < min_b) min_b = x;
+            if (y < min_b) min_b = y;
+            if (z < min_b) min_b = z;
         }
+
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> diff = end - start;
+        diff = diff * 1000;
+        std::cout << "add_mid_points: Loop Time: " << diff.count() << " ms\n";
+
+        // Update bounds
+        max_bound = max_b;
+        min_bound = min_b;
 
         delete delaunay_;
         delaunay_ = new PeriodicDelaunay3d(periodic_, 1.0);
+
         if (!periodic_)
         {
             delaunay_->set_keeps_infinite(true);
         }
+
+        // Set initial vertices
         delaunay_->set_vertices(point_positions_.size() / 3, point_positions_.data());
+        // Compute the updated triangulation
+        start = std::chrono::high_resolution_clock::now();
         delaunay_->compute();
-        for (int i = 0; i < point_positions_.size(); i++)
-        {
-            if (point_positions_[i] > max_bound)
-            {
-                max_bound = point_positions_[i];
-            }
-            if (point_positions_[i] < min_bound)
-            {
-                min_bound = point_positions_[i];
-            }
-        }
+
+        end = std::chrono::high_resolution_clock::now();
+        diff = end - start;
+        diff = diff * 1000;
+        std::cout << "add_mid_points: delaunay computation time: " << diff.count() << " ms\n";
     }
+
 
     std::vector<double> MCMT::interpolate(double *point1, double *point2, double sd1, double sd2)
     {
@@ -700,103 +737,83 @@ namespace GEO
     }
     std::vector<double> MCMT::lloyd_relaxation(double *relaxed_point_positions, int num_points, int num_iter)
     {
-        // std::cout << "num_points: " << num_points << std::endl;
-
         int current_num_points = point_positions_.size() / 3;
-        // copy point_positions_ to new_points
-        std::vector<double> all_points;
-        all_points.resize(point_positions_.size() + num_points * 3);
 
-        for (int i = 0; i < point_positions_.size(); i++)
+        // Combine existing and new points into all_points
+        std::vector<double> all_points(point_positions_.size() + num_points * 3);
+        std::copy(point_positions_.begin(), point_positions_.end(), all_points.begin());
+        std::copy(relaxed_point_positions, relaxed_point_positions + num_points * 3, all_points.begin() + point_positions_.size());
+
+        // Initialize delaunay_ if necessary
+        if (!delaunay_)
         {
-            all_points[i] = point_positions_[i];
-        }
-        for (int i = 0; i < num_points * 3; i++)
-        {
-            all_points[i + point_positions_.size()] = relaxed_point_positions[i];
-        }
-
-        delete delaunay_;
-        delaunay_ = new PeriodicDelaunay3d(periodic_, 1.0);
-        // std::cout << "Before" << std::endl;
-        if (!periodic_)
-        {
-            delaunay_->set_keeps_infinite(true);
-        }
-        delaunay_->set_vertices(all_points.size() / 3, all_points.data());
-        delaunay_->compute();
-        // std::cout << "After" << std::endl;
-
-        for (int i = 0; i < num_iter; i++)
-        {
-            std::vector<double> updated_lloyd_points;
-            updated_lloyd_points.resize(all_points.size());
-            // std::cout << "Current number of points: " << current_num_points << " New points size: " << updated_lloyd_points.size() / 3 << std::endl;
-
-            for(int j=0; j<current_num_points*3; j++){
-                updated_lloyd_points[j] = all_points[j];
-            }
-
-            for (index_t v = current_num_points; v < all_points.size() / 3; v++)
-            {
-                // std::cout << "After get cell123" << std::endl;
-
-                PeriodicDelaunay3d::IncidentTetrahedra W;
-                ConvexCell C;
-
-                get_cell(v, C, W);
-                // std::cout << "After get cell" << std::endl;
-
-                vec3 g = C.barycenter();
-                // std::cout << "v: " << v << " " << delaunay_->nb_vertices() << std::endl;
-                //
-                // std::cout << "g: " << g << std::endl;
-                if (v >= current_num_points)
-                {
-                    updated_lloyd_points[3 * v] = g.x;
-                    updated_lloyd_points[3 * v + 1] = g.y;
-                    updated_lloyd_points[3 * v + 2] = g.z;
-                }
-            }
-            // std::cout << "=======1======" << std::endl;
-
-            for (index_t v = current_num_points; v < delaunay_->nb_vertices(); v++)
-            {
-                if (updated_lloyd_points[v] < min_bound)
-                {
-                    updated_lloyd_points[v] += (max_bound - min_bound);
-                }
-                if (updated_lloyd_points[v] > max_bound)
-                {
-                    updated_lloyd_points[v] -= (max_bound - min_bound);
-                }
-            }
-            // std::cout << "=======2======" << std::endl;
-
-            all_points.swap(updated_lloyd_points);
-            // std::cout << "=======3======" << std::endl;
-
-            delete delaunay_;
             delaunay_ = new PeriodicDelaunay3d(periodic_, 1.0);
-            // std::cout << "=======4======" << std::endl;
-
-            // std::cout << "=======4======" << std::endl;
-
-            delaunay_->set_vertices(updated_lloyd_points.size() / 3, updated_lloyd_points.data());
-            // std::cout << "=======5======" << std::endl;
-
-            delaunay_->compute();
-            // std::cout << "=======6======" << std::endl;
+            if (!periodic_)
+                delaunay_->set_keeps_infinite(true);
         }
-        std::vector<double> points_vec;
-        points_vec.reserve(num_points * 3);
 
-        for (int i = current_num_points * 3; i < current_num_points * 3 + num_points * 3; i++)
+        // Set vertices and compute Delaunay triangulation
+        delaunay_->set_vertices(all_points.size() / 3, all_points.data());
+        auto start = std::chrono::high_resolution_clock::now();
+        delaunay_->compute();
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> diff = end - start;
+        diff = diff * 1000;
+        std::cout << "lloyd relaxation: delaunay compute Time: " << diff.count() << " ms\n";
+
+
+        // Preallocate updated_lloyd_points
+        std::vector<double> updated_lloyd_points(all_points.size());
+
+        double range = max_bound - min_bound;
+
+        for (int iter = 0; iter < num_iter; iter++)
         {
-            points_vec.push_back(all_points[i]);
+            // Copy existing points
+            std::copy(all_points.begin(), all_points.begin() + current_num_points * 3, updated_lloyd_points.begin());
+
+            // Parallelize the computation of new points
+            tbb::parallel_for(tbb::blocked_range<index_t>(current_num_points, all_points.size() / 3),
+                [&](const tbb::blocked_range<index_t>& r) {
+                    for (index_t v = r.begin(); v != r.end(); ++v)
+                    {
+                        PeriodicDelaunay3d::IncidentTetrahedra W;
+                        ConvexCell C;
+                        get_cell(v, C, W);
+                        vec3 g = C.barycenter();
+
+                        updated_lloyd_points[3 * v] = g.x;
+                        updated_lloyd_points[3 * v + 1] = g.y;
+                        updated_lloyd_points[3 * v + 2] = g.z;
+
+                        // Adjust for periodicity
+                        for (int d = 0; d < 3; ++d)
+                        {
+                            double& coord = updated_lloyd_points[3 * v + d];
+                            coord = min_bound + std::fmod(coord - min_bound + range, range);
+                        }
+                    }
+                });
+
+            // Swap all_points and updated_lloyd_points
+            std::swap(all_points, updated_lloyd_points);
+
+            // Update delaunay_ with new positions
+            delaunay_->set_vertices(all_points.size() / 3, all_points.data());
+            start = std::chrono::high_resolution_clock::now();
+            delaunay_->compute();
+            end = std::chrono::high_resolution_clock::now();
+            diff = end - start;
+            diff = diff * 1000;
+            std::cout << "lloyd relaxation: delaunay new compute Time: " << diff.count() << " ms\n";
         }
+
+        // Extract the relaxed points
+        std::vector<double> points_vec(all_points.begin() + current_num_points * 3, all_points.end());
+
         return points_vec;
     }
+
     void MCMT::output_grid_points(std::string filename)
     {
         std::ofstream outfile(filename);
@@ -1115,6 +1132,292 @@ namespace GEO
         }
     }
 
+    std::pair<std::vector<std::vector<double>>, std::vector<std::vector<int>>> 
+    MCMT::get_triangle_mesh() {
+
+        std::vector<std::vector<double>> mesh_vertices;
+        std::vector<std::vector<int>> mesh_faces;
+
+        std::map<std::pair<int, int>, int> ev_map;
+        int v_counter = 0;
+        std::vector<int> intersection_cell;
+
+        for (int i = 0; i < delaunay_->nb_finite_cells(); i++)
+        {
+            std::vector<int> v_indices;
+            bool flag = false;
+            for (index_t lv = 0; lv < 4; ++lv)
+            {
+                int v = delaunay_->cell_vertex(i, lv);
+                v_indices.push_back(int(v));
+            }
+
+            if (point_values_[v_indices[0]] * point_values_[v_indices[1]] < 0)
+            {
+                flag = true;
+                std::pair<int, int> e01 = (v_indices[0] < v_indices[1]) ? std::make_pair(v_indices[0], v_indices[1]) : std::make_pair(v_indices[1], v_indices[0]);
+                if (ev_map.find(e01) == ev_map.end())
+                {
+                    std::vector<double> interpolated_point = interpolate(point_positions_.data() + v_indices[0] * 3, point_positions_.data() + v_indices[1] * 3, point_values_[v_indices[0]], point_values_[v_indices[1]]);
+                    ev_map.insert({e01, mesh_vertices.size()});
+                    mesh_vertices.push_back(interpolated_point);
+                }
+            }
+            if (point_values_[v_indices[0]] * point_values_[v_indices[2]] < 0)
+            {
+                flag = true;
+                std::pair<int, int> e02 = (v_indices[0] < v_indices[2]) ? std::make_pair(v_indices[0], v_indices[2]) : std::make_pair(v_indices[2], v_indices[0]);
+                if (ev_map.find(e02) == ev_map.end())
+                {
+                    std::vector<double> interpolated_point = interpolate(point_positions_.data() + v_indices[0] * 3, point_positions_.data() + v_indices[2] * 3, point_values_[v_indices[0]], point_values_[v_indices[2]]);
+                    ev_map.insert({e02, mesh_vertices.size()});
+                    mesh_vertices.push_back(interpolated_point);
+                }
+            }
+            if (point_values_[v_indices[0]] * point_values_[v_indices[3]] < 0)
+            {
+                flag = true;
+                std::pair<int, int> e03 = (v_indices[0] < v_indices[3]) ? std::make_pair(v_indices[0], v_indices[3]) : std::make_pair(v_indices[3], v_indices[0]);
+                if (ev_map.find(e03) == ev_map.end())
+                {
+                    std::vector<double> interpolated_point = interpolate(point_positions_.data() + v_indices[0] * 3, point_positions_.data() + v_indices[3] * 3, point_values_[v_indices[0]], point_values_[v_indices[3]]);
+                    ev_map.insert({e03, mesh_vertices.size()});
+                    mesh_vertices.push_back(interpolated_point);
+                }
+            }
+            if (point_values_[v_indices[1]] * point_values_[v_indices[2]] < 0)
+            {
+                flag = true;
+                std::pair<int, int> e12 = (v_indices[1] < v_indices[2]) ? std::make_pair(v_indices[1], v_indices[2]) : std::make_pair(v_indices[2], v_indices[1]);
+                if (ev_map.find(e12) == ev_map.end())
+                {
+                    std::vector<double> interpolated_point = interpolate(point_positions_.data() + v_indices[1] * 3, point_positions_.data() + v_indices[2] * 3, point_values_[v_indices[1]], point_values_[v_indices[2]]);
+                    ev_map.insert({e12, mesh_vertices.size()});
+                    mesh_vertices.push_back(interpolated_point);
+                }
+            }
+            if (point_values_[v_indices[1]] * point_values_[v_indices[3]] < 0)
+            {
+                flag = true;
+                std::pair<int, int> e13 = (v_indices[1] < v_indices[3]) ? std::make_pair(v_indices[1], v_indices[3]) : std::make_pair(v_indices[3], v_indices[1]);
+                if (ev_map.find(e13) == ev_map.end())
+                {
+                    std::vector<double> interpolated_point = interpolate(point_positions_.data() + v_indices[1] * 3, point_positions_.data() + v_indices[3] * 3, point_values_[v_indices[1]], point_values_[v_indices[3]]);
+                    ev_map.insert({e13, mesh_vertices.size()});
+                    mesh_vertices.push_back(interpolated_point);
+                }
+            }
+            if (point_values_[v_indices[2]] * point_values_[v_indices[3]] < 0)
+            {
+                flag = true;
+                std::pair<int, int> e23 = (v_indices[2] < v_indices[3]) ? std::make_pair(v_indices[2], v_indices[3]) : std::make_pair(v_indices[3], v_indices[2]);
+                if (ev_map.find(e23) == ev_map.end())
+                {
+                    std::vector<double> interpolated_point = interpolate(point_positions_.data() + v_indices[2] * 3, point_positions_.data() + v_indices[3] * 3, point_values_[v_indices[2]], point_values_[v_indices[3]]);
+                    ev_map.insert({e23, mesh_vertices.size()});
+                    mesh_vertices.push_back(interpolated_point);
+                }
+            }
+
+            if (flag)
+            {
+                intersection_cell.push_back(i);
+            }
+        }
+        for (int i = 0; i < intersection_cell.size(); i++)
+        {
+            int cell_index = intersection_cell[i];
+
+            unsigned char index = 0;
+            std::vector<int> v_indices;
+            for (index_t lv = 0; lv < 4; ++lv)
+            {
+                int v = delaunay_->cell_vertex(cell_index, lv);
+                v_indices.push_back(int(v));
+
+                if (point_values_[v] < 0)
+                {
+                    index |= (1 << lv);
+                }
+            }
+
+            std::pair<int, int> e01 = (v_indices[0] < v_indices[1]) ? std::make_pair(v_indices[0], v_indices[1]) : std::make_pair(v_indices[1], v_indices[0]);
+            std::pair<int, int> e02 = (v_indices[0] < v_indices[2]) ? std::make_pair(v_indices[0], v_indices[2]) : std::make_pair(v_indices[2], v_indices[0]);
+            std::pair<int, int> e03 = (v_indices[0] < v_indices[3]) ? std::make_pair(v_indices[0], v_indices[3]) : std::make_pair(v_indices[3], v_indices[0]);
+            std::pair<int, int> e12 = (v_indices[1] < v_indices[2]) ? std::make_pair(v_indices[1], v_indices[2]) : std::make_pair(v_indices[2], v_indices[1]);
+            std::pair<int, int> e13 = (v_indices[1] < v_indices[3]) ? std::make_pair(v_indices[1], v_indices[3]) : std::make_pair(v_indices[3], v_indices[1]);
+            std::pair<int, int> e23 = (v_indices[2] < v_indices[3]) ? std::make_pair(v_indices[2], v_indices[3]) : std::make_pair(v_indices[3], v_indices[2]);
+
+            int v00, v10, v20, v01, v11, v21;
+
+            // Case analysis
+            switch (index)
+            {
+                // skip inside or outside situitions
+            case 0x00:
+            case 0x0F:
+                break;
+                // only vert 0 is inside
+            case 0x01:
+                v00 = ev_map[e01];
+                v10 = ev_map[e03];
+                v20 = ev_map[e02];
+
+                mesh_faces.push_back({v00, v20, v10});
+                break;
+
+                // only vert 1 is inside
+            case 0x02:
+                v00 = ev_map[e01];
+                v10 = ev_map[e12];
+                v20 = ev_map[e13];
+
+                mesh_faces.push_back({v00, v20, v10});
+                break;
+
+                // only vert 2 is inside
+            case 0x04:
+                v00 = ev_map[e02];
+                v10 = ev_map[e23];
+                v20 = ev_map[e12];
+
+                mesh_faces.push_back({v00, v20, v10});
+                break;
+
+                // only vert 3 is inside
+            case 0x08:
+                v00 = ev_map[e13];
+                v10 = ev_map[e23];
+                v20 = ev_map[e03];
+
+                mesh_faces.push_back({v00, v20, v10});
+                break;
+
+                // verts 0, 1 are inside
+            case 0x03:
+                v00 = ev_map[e03];
+                v10 = ev_map[e02];
+                v20 = ev_map[e13];
+
+                mesh_faces.push_back({v00, v20, v10});
+                v01 = ev_map[e02];
+                v11 = ev_map[e12];
+                v21 = ev_map[e13];
+
+                mesh_faces.push_back({v01, v21, v11});
+                break;
+
+                // verts 0, 2 are inside
+            case 0x05:
+                v00 = ev_map[e03];
+                v10 = ev_map[e12];
+                v20 = ev_map[e01];
+
+                mesh_faces.push_back({v00, v20, v10});
+                v01 = ev_map[e12];
+                v11 = ev_map[e03];
+                v21 = ev_map[e23];
+
+                mesh_faces.push_back({v01, v21, v11});
+                break;
+
+                // verts 0, 3 are inside
+            case 0x09:
+                v00 = ev_map[e01];
+                v10 = ev_map[e13];
+                v20 = ev_map[e02];
+
+                mesh_faces.push_back({v00, v20, v10});
+                v01 = ev_map[e13];
+                v11 = ev_map[e23];
+                v21 = ev_map[e02];
+
+                mesh_faces.push_back({v01, v21, v11});
+                break;
+
+                // verts 1, 2 are inside
+            case 0x06:
+                v00 = ev_map[e01];
+                v10 = ev_map[e02];
+                v20 = ev_map[e13];
+
+                mesh_faces.push_back({v00, v20, v10});
+                v01 = ev_map[e13];
+                v11 = ev_map[e02];
+                v21 = ev_map[e23];
+                mesh_faces.push_back({v01, v21, v11});
+                break;
+
+                // verts 2, 3 are inside
+            case 0x0C:
+                v00 = ev_map[e13];
+                v10 = ev_map[e02];
+                v20 = ev_map[e03];
+
+                mesh_faces.push_back({v00, v20, v10});
+                v01 = ev_map[e02];
+                v11 = ev_map[e13];
+                v21 = ev_map[e12];
+                mesh_faces.push_back({v01, v21, v11});
+                break;
+
+                // verts 1, 3 are inside
+            case 0x0A:
+                v00 = ev_map[e03];
+                v10 = ev_map[e01];
+                v20 = ev_map[e12];
+
+                mesh_faces.push_back({v00, v20, v10});
+                v01 = ev_map[e12];
+                v11 = ev_map[e23];
+                v21 = ev_map[e03];
+                mesh_faces.push_back({v01, v21, v11});
+                break;
+
+                // verts 0, 1, 2 are inside
+            case 0x07:
+                v00 = ev_map[e03];
+                v10 = ev_map[e23];
+                v20 = ev_map[e13];
+
+                mesh_faces.push_back({v00, v20, v10});
+                break;
+
+                // verts 0, 1, 3 are inside
+            case 0x0B:
+                v00 = ev_map[e12];
+                v10 = ev_map[e23];
+                v20 = ev_map[e02];
+
+                mesh_faces.push_back({v00, v20, v10});
+                break;
+
+                // verts 0, 2, 3 are inside
+            case 0x0D:
+                v00 = ev_map[e01];
+                v10 = ev_map[e13];
+                v20 = ev_map[e12];
+
+                mesh_faces.push_back({v00, v20, v10});
+                break;
+
+                // verts 1, 2, 3 are inside
+            case 0x0E:
+                v00 = ev_map[e01];
+                v10 = ev_map[e02];
+                v20 = ev_map[e03];
+
+                mesh_faces.push_back({v00, v20, v10});
+                break;
+
+            default:
+                // assert(false);
+                continue;
+            }
+        }
+        return std::make_pair(mesh_vertices, mesh_faces);
+    }
+
     void MCMT::save_grid_mesh(std::string filename, float x_clip_plane)
     {
 
@@ -1179,6 +1482,45 @@ namespace GEO
                 }
             }
         }
+    }
+
+    std::pair<std::vector<std::vector<double>>, std::vector<std::vector<int>>> 
+    MCMT::get_grid_mesh(float x_clip_plane)
+    {
+
+        std::vector<std::vector<double>> mesh_vertices;
+        std::vector<std::vector<int>> mesh_faces;
+
+        for (int i = 0; i < delaunay_->nb_vertices(); i++)
+        {
+            double x = delaunay_->vertex_ptr(i)[0];
+            double y = delaunay_->vertex_ptr(i)[1];
+            double z = delaunay_->vertex_ptr(i)[2];
+            mesh_vertices.push_back(std::vector<double>{x, y, z});
+        }
+
+        for (int i = 0; i < delaunay_->nb_finite_cells(); i++)
+        {
+            std::vector<int> v_indices;
+            bool flag = false;
+            for (index_t lv = 0; lv < 4; ++lv)
+            {
+                int v = delaunay_->cell_vertex(i, lv);
+                double x = delaunay_->vertex_ptr(v)[0];
+
+                if (x < x_clip_plane)
+                {
+                    flag = true;
+                    break;
+                }
+                v_indices.push_back(int(v));
+            }
+            if (flag)
+                continue;
+            mesh_faces.push_back(v_indices);
+        }
+        return std::make_pair(mesh_vertices, mesh_faces);
+
     }
 
 }

@@ -1,5 +1,7 @@
 import argparse
 import sys
+import ctypes
+ctypes.CDLL('/home/jeeva.selvam/geogram/build/Linux64-gcc-dynamic-Release/lib/libgeogram.so.1')
 import os
 import open3d as o3d
 from mesh_sdf import MeshSDF

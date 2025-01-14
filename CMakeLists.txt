@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15..3.26)
+cmake_minimum_required(VERSION 3.15)
 
 # Set a name and a version number for your project:
 project(

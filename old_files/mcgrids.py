@@ -5,7 +5,6 @@ import time
 import tqdm
 import torch
 import mcubes
-import kaolin
 import os
 import tempfile
 
@@ -41,11 +40,11 @@ class McGrids:
         start_time = time.time()
         self.query_count = 0
         # create an a grid from uniform sampling
-        XX = np.linspace(-self.clip_min, self.clip_max,
+        XX = np.linspace(self.clip_min[0], self.clip_max[0],
                          self.initial_resolution)
-        YY = np.linspace(-self.clip_min, self.clip_max,
+        YY = np.linspace(self.clip_min[1], self.clip_max[1],
                          self.initial_resolution)
-        ZZ = np.linspace(-self.clip_min, self.clip_max,
+        ZZ = np.linspace(self.clip_min[2], self.clip_max[2],
                          self.initial_resolution)
         X, Y, Z = np.meshgrid(XX, YY, ZZ)
         points = np.stack((X.flatten(), Y.flatten(), Z.flatten()), axis=-1)

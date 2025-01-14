@@ -45,6 +45,8 @@ namespace GEO
 		void output_grid_points(std::string filename);
 		void save_triangle_mesh(std::string filename);
 		void save_grid_mesh(std::string filename, float x_clip_plane);
+		std::pair<std::vector<std::vector<double>>, std::vector<std::vector<int>>> get_triangle_mesh();
+		std::pair<std::vector<std::vector<double>>, std::vector<std::vector<int>>> get_grid_mesh(float x_clip_plane);
 
 		std::vector<double> sample_points_voronoi(const int num_points);
 
